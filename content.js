@@ -6,12 +6,11 @@ function getMonday(d) {
     return new Date(date.setDate(diff)).setHours(0, 0, 0, 0);
 }
 
-function getSemesterWeek(date, minDate) {
-    const mon1 = getMonday(minDate);
-    const mon2 = getMonday(date);
-    const diffTime = mon2 - mon1;
-    const diffWeeks = Math.round(diffTime / (7 * 24 * 60 * 60 * 1000));
-    return diffWeeks >= 0 ? diffWeeks + 1 : 1; 
+// Counts only weeks that have recordings, so breaks (e.g. Easter) don't use up a week number.
+// lectureWeeks: sorted Monday timestamps of all weeks with a recording on the page.
+function getSemesterWeek(date, lectureWeeks) {
+    const index = lectureWeeks.indexOf(getMonday(date));
+    return index >= 0 ? index + 1 : 1;
 }
 
 function getISOWeekInfo(date) {
@@ -197,9 +196,9 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         // 2. Chronologisch sortieren (Älteste zuerst!)
         extractedVideos.sort((a, b) => a.dateInfo.timestamp - b.dateInfo.timestamp);
 
-        // Use the oldest video on the whole page as the reference for week 1,
+        // Collect the weeks with recordings across the whole page (not just the date range),
         // so the date filter doesn't shift the semester week numbers.
-        let absoluteMinDateObj = null;
+        const lectureMondays = new Set();
         videoLinks.forEach(linkEl => {
             let container = linkEl.parentElement;
             let timeEl = null;
@@ -210,16 +209,10 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
             }
             if (timeEl) {
                 const dateInfo = extractDateInfo(timeEl);
-                if (dateInfo && (!absoluteMinDateObj || dateInfo.timestamp < absoluteMinDateObj.getTime())) {
-                    absoluteMinDateObj = dateInfo.dateObj;
-                }
+                if (dateInfo) lectureMondays.add(getMonday(dateInfo.dateObj));
             }
         });
-
-        // Fallback if no date was found
-        if (!absoluteMinDateObj) {
-            absoluteMinDateObj = extractedVideos.length > 0 ? extractedVideos[0].dateInfo.dateObj : new Date();
-        }
+        const lectureWeeks = [...lectureMondays].sort((a, b) => a - b);
 
         // 3. Dateinamen generieren (inklusive Unterordner)
         let currentQueue = [];
@@ -227,7 +220,7 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         extractedVideos.forEach(video => {
             let weekNum = video.dateInfo.calWeek;
             if (weekFormat === "semester") {
-                weekNum = getSemesterWeek(video.dateInfo.dateObj, absoluteMinDateObj);
+                weekNum = getSemesterWeek(video.dateInfo.dateObj, lectureWeeks);
             }
 
             // Basis-Format: MM-DD-YYYY-weekday
