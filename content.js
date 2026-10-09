@@ -68,7 +68,11 @@ if (currentUrl.includes('/v/')) {
 
     const interval = setInterval(() => {
         if (!buttonClicked) {
-            const downloadBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Download'));
+            // Find both English "Download" and German "Herunterladen" buttons
+            const downloadBtn = Array.from(document.querySelectorAll('button')).find(b => {
+                const text = b.textContent.toLowerCase();
+                return text.includes('download') || text.includes('herunterladen');
+            });
             if (downloadBtn) {
                 downloadBtn.click();
                 buttonClicked = true;
@@ -135,7 +139,8 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         updateUIStatus("Downloads running...", false);
 
         const maxInputVal = document.getElementById('eth-max-input').value;
-        const maxVideos = maxInputVal ? parseInt(maxInputVal) : Infinity; 
+        // 0 = no limit (Infinity doesn't survive being sent as a message)
+        const maxVideos = maxInputVal ? parseInt(maxInputVal) : 0;
         
         let vonDate = document.getElementById('eth-von-input').value || "0000-00-00";
         let bisDate = document.getElementById('eth-bis-input').value || "9999-99-99";
@@ -150,7 +155,7 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         const seenUrls = new Set();
         let extractedVideos = [];
 
-        // 1. Alle Videos sammeln, die im gefilterten Zeitraum liegen
+        // 1. Alle Videos sammeln
         const videoLinks = document.querySelectorAll('a[href*="/v/"]');
         videoLinks.forEach(linkEl => {
             if (seenUrls.has(linkEl.href)) return;
@@ -192,12 +197,10 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         // 2. Chronologisch sortieren (Älteste zuerst!)
         extractedVideos.sort((a, b) => a.dateInfo.timestamp - b.dateInfo.timestamp);
 
-        // NEU: Wir ermitteln das absolut älteste Video der gesamten Seite als Referenz für Woche 1,
-        // damit Datumsfilter die Semesterwoche nicht verfälschen.
+        // Use the oldest video on the whole page as the reference for week 1,
+        // so the date filter doesn't shift the semester week numbers.
         let absoluteMinDateObj = null;
-        const allVideoLinksOnPage = document.querySelectorAll('a[href*="/v/"]');
-        
-        allVideoLinksOnPage.forEach(linkEl => {
+        videoLinks.forEach(linkEl => {
             let container = linkEl.parentElement;
             let timeEl = null;
             for (let i = 0; i < 8; i++) {
@@ -207,15 +210,13 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
             }
             if (timeEl) {
                 const dateInfo = extractDateInfo(timeEl);
-                if (dateInfo) {
-                    if (!absoluteMinDateObj || dateInfo.timestamp < absoluteMinDateObj.getTime()) {
-                        absoluteMinDateObj = dateInfo.dateObj;
-                    }
+                if (dateInfo && (!absoluteMinDateObj || dateInfo.timestamp < absoluteMinDateObj.getTime())) {
+                    absoluteMinDateObj = dateInfo.dateObj;
                 }
             }
         });
 
-        // Fallback, falls kein Datum gefunden wurde oder die Liste leer ist
+        // Fallback if no date was found
         if (!absoluteMinDateObj) {
             absoluteMinDateObj = extractedVideos.length > 0 ? extractedVideos[0].dateInfo.dateObj : new Date();
         }
@@ -242,7 +243,6 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
 
             currentQueue.push({
                 url: video.url,
-                // Speichert es im Vorlesungs-Unterordner
                 filename: `${video.title}/${filenameBase}.mp4`,
                 res: selectedRes
             });
@@ -252,7 +252,7 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
             chrome.runtime.sendMessage({ 
                 action: "start_queue", 
                 queue: currentQueue,
-                maxConcurrent: maxVideos // An echten Download-Manager in background.js senden
+                maxConcurrent: maxVideos 
             });
         } else {
             updateUIStatus("No videos found", true);
@@ -264,7 +264,7 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         updateUIStatus("Stopped", true);
     }
 
-    // Hilfsfunktion: Sucht die aktuellsten min/max Daten auf der Seite (nur für die UI Vorbelegung)
+    // Finds the oldest and newest video dates on the page (used to prefill the UI)
     function getMinMaxDates() {
         let minDate = "9999-99-99";
         let maxDate = "0000-00-00";
@@ -294,13 +294,13 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
     }
 
     function injectButton() {
-        if (document.getElementById('eth-mini-panel')) return; // Wenn schon da, nichts tun
+        if (document.getElementById('eth-mini-panel')) return;
 
         const dates = getMinMaxDates();
 
         const panel = document.createElement('div');
         panel.id = 'eth-mini-panel';
-        // Klassisches Design mit Transition für den Hide-Effekt
+        // Solid design (restored dated style layout)
         panel.style.cssText = `
             position: fixed; bottom: 20px; right: 20px; z-index: 999999;
             background-color: #f4f4f4; padding: 10px; border-radius: 6px;
@@ -310,18 +310,16 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
             transition: all 0.3s ease;
         `;
 
-        // Der Header-Bereich inklusive dem Toggle-Button ("-")
         const header = document.createElement('div');
         header.style.cssText = "display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #ddd;";
         header.innerHTML = `
             <div>
                 <strong style="font-size: 13px; color: #0070bc;">ETH Downloader</strong>
-                <span style="cursor:help; font-size: 14px; margin-left: 5px;" title="Some videos need special authorisation. Click on a video first and type in the credentials.\n\nClicking Stop doesn't stop the current download">ℹ️</span>
+                <span style="cursor:help; font-size: 14px; margin-left: 5px;" title="Some videos need special authorisation. Click on a video first and type in the credentials.&#10;&#10;Clicking Stop doesn't stop the current download">ℹ️</span>
             </div>
             <button id="eth-toggle-btn" style="background: none; border: none; font-size: 18px; cursor: pointer; color: #555; padding: 0 4px; line-height: 1; outline: none; font-weight: bold;">−</button>
         `;
 
-        // Ein Container, der alle Einstellungselemente umschließt
         const contentContainer = document.createElement('div');
         contentContainer.style.display = "flex";
         contentContainer.style.flexDirection = "column";
@@ -380,7 +378,7 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         btnStop.style.cssText = "flex: 1; padding: 7px; background-color: #d32f2f; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: bold; transition: background-color 0.2s;";
         btnStop.onclick = stopProcess;
 
-        // Toggle-Logik (Ausklappen/Zuklappen)
+        // Toggle logic (Collapse/Expand)
         const toggleBtn = header.querySelector('#eth-toggle-btn');
         let isMinimized = false;
         toggleBtn.onclick = () => {
@@ -400,6 +398,31 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
             }
         };
 
+        // Subtle hidden button to hide/show the entire UI panel
+        // (replace any leftover one, since it belongs to the old panel)
+        const oldHideShowBtn = document.getElementById('eth-visibility-toggle');
+        if (oldHideShowBtn) oldHideShowBtn.remove();
+        const hideShowBtn = document.createElement('button');
+        hideShowBtn.id = 'eth-visibility-toggle';
+        hideShowBtn.style.cssText = `
+            position: fixed; bottom: 5px; right: 5px; z-index: 1000000;
+            width: 10px; height: 10px; border-radius: 50%;
+            background-color: rgba(120, 120, 120, 0.4); border: none;
+            cursor: pointer; opacity: 0.1; transition: opacity 0.2s;
+            outline: none; padding: 0; margin: 0;
+        `;
+        hideShowBtn.title = "Toggle ETH Downloader UI Visibility";
+        hideShowBtn.onmouseover = () => hideShowBtn.style.opacity = "0.7";
+        hideShowBtn.onmouseout = () => hideShowBtn.style.opacity = "0.1";
+        
+        hideShowBtn.onclick = () => {
+            if (panel.style.display === 'none') {
+                panel.style.display = 'flex';
+            } else {
+                panel.style.display = 'none';
+            }
+        };
+
         btnContainer.appendChild(btnStart);
         btnContainer.appendChild(btnStop);
 
@@ -413,18 +436,20 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         
         panel.appendChild(header);
         panel.appendChild(contentContainer);
+        
         document.body.appendChild(panel);
+        document.body.appendChild(hideShowBtn);
     }
 
-    // KUGELSICHER: Prüft alle 1,5 Sekunden.
+    // Checks every 1.5s, so the panel survives the page re-rendering or loading content late
     setInterval(() => {
         if (!document.getElementById('eth-mini-panel')) {
             injectButton();
         } else {
-            // Aktualisiert die Datums-Felder dynamisch, falls die Seite die Videos erst später nachgeladen hat!
+            // Fill in the date fields if the videos were only loaded after the panel was created
             const vonInput = document.getElementById('eth-von-input');
             const bisInput = document.getElementById('eth-bis-input');
-            
+
             if (vonInput && bisInput && (!vonInput.value || !bisInput.value)) {
                 const dates = getMinMaxDates();
                 if (!vonInput.value && dates.min) vonInput.value = dates.min;

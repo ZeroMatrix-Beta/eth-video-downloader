@@ -1,139 +1,155 @@
-let videoQueue = [];
-let currentVideo = null;
-let currentTabId = null;
-let timeoutId = null;
-
-// Variablen für das echte Download-Limit
-let maxConcurrent = 3;
-let isExtracting = false;
-let queueInterval = null;
-
-// Echtzeit-Tracker für aktive Download-IDs
-let activeDownloads = new Set();
-
-// Überwacht Statusänderungen von Downloads
-chrome.downloads.onChanged.addListener((delta) => {
-    if (delta.state) {
-        const state = delta.state.current;
-        // Sobald ein Download fertig oder abgebrochen ist, aus dem Tracker entfernen
-        if (state === "complete" || state === "interrupted") {
-            activeDownloads.delete(delta.id);
-            // Sofort prüfen, ob das nächste Video gestartet werden kann (beschleunigt die Warteschlange)
-            checkQueue();
-        }
-    }
-});
-
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    // 1. Startbefehl von der Hauptseite
-    if (request.action === "start_queue") {
-        videoQueue = request.queue;
-        maxConcurrent = request.maxConcurrent || 3;
-        activeDownloads.clear(); // Tracker zurücksetzen
-        
-        // Startet die regelmäßige Überprüfung
-        if (!queueInterval) queueInterval = setInterval(checkQueue, 2000);
-        checkQueue();
-    }
-
-    // 2. Abbruch (Stop-Button)
-    if (request.action === "stop_queue") {
-        videoQueue = [];
-        isExtracting = false;
-        activeDownloads.clear();
-        if (queueInterval) {
-            clearInterval(queueInterval);
-            queueInterval = null;
-        }
-        if (timeoutId) clearTimeout(timeoutId);
-        if (currentTabId) {
-            chrome.tabs.remove(currentTabId);
-            currentTabId = null;
-        }
-    }
-
-    // 3. Link aus dem Hintergrund-Tab erhalten
-    if (request.action === "link_found") {
-        if (timeoutId) clearTimeout(timeoutId);
-        
-        chrome.downloads.download({
-            url: request.url,
-            filename: currentVideo.filename,
-            saveAs: false
-        }, (downloadId) => {
-            if (chrome.runtime.lastError) {
-                console.error("Download-Fehler:", chrome.runtime.lastError.message);
-            } else if (downloadId !== undefined) {
-                // Registriert den Download sofort, um Überschneidungen zu verhindern
-                activeDownloads.add(downloadId);
-            }
-        });
-        
-        closeTabAndContinue();
-    }
-    
-    if (request.action === "link_not_found") {
-        if (timeoutId) clearTimeout(timeoutId);
-        closeTabAndContinue();
-    }
-});
-
-// Prüft, ob neue Downloads gestartet werden dürfen
-function checkQueue() {
-    // Wenn alles abgearbeitet ist
-    if (videoQueue.length === 0 && !isExtracting) {
-        if (queueInterval) {
-            clearInterval(queueInterval);
-            queueInterval = null;
-        }
-        chrome.tabs.query({}, function(tabs) {
-            tabs.forEach(tab => {
-                if (tab.url && tab.url.includes("video.ethz.ch")) {
-                    chrome.tabs.sendMessage(tab.id, { action: "queue_finished" });
-                }
-            });
-        });
-        return;
-    }
-
-    // Wenn wir gerade einen Link suchen oder nichts mehr in der Warteschlange ist, abwarten
-    if (isExtracting || videoQueue.length === 0) return;
-
-    // Nutzt den präzisen lokalen Tracker statt der zeitverzögerten Chrome-Suche
-    if (activeDownloads.size < maxConcurrent) {
-        startExtraction();
-    }
+// State management helpers using chrome.storage.local
+// (the service worker is suspended when idle, which would wipe in-memory state)
+function updateState(changes) {
+    return chrome.storage.local.set(changes);
 }
 
-function startExtraction() {
-    isExtracting = true;
-    currentVideo = videoQueue.shift();
-    
-    // Auflösung als Hash mitschicken
-    const tabUrl = currentVideo.url + `#eth-res=${currentVideo.res}`;
-    
-    chrome.tabs.create({ url: tabUrl, active: false }, (tab) => {
-        currentTabId = tab.id;
-        
-        // Timeout: Nach 15 Sek mit dem nächsten weitermachen
-        timeoutId = setTimeout(() => {
-            closeTabAndContinue();
-        }, 15000);
+function getState() {
+    return chrome.storage.local.get({
+        videoQueue: [],
+        currentVideo: null,
+        currentTabId: null,
+        maxConcurrent: 3, // 0 = no limit
+        isExtracting: false,
+        activeDownloads: [] // IDs of downloads started by this extension that are still running
     });
 }
 
-function closeTabAndContinue() {
-    if (currentTabId) {
-        chrome.tabs.remove(currentTabId, () => {
-            currentTabId = null;
-            // Kurz warten, damit Chrome den Download registrieren kann
-            setTimeout(() => {
-                isExtracting = false;
-                checkQueue();
-            }, 1500); 
-        });
-    } else {
-        isExtracting = false;
-        checkQueue();
+// Runs state read-modify-write sequences one after another, so overlapping events
+// (e.g. two downloads finishing at once) can't both start an extraction.
+let stateLock = Promise.resolve();
+function withStateLock(fn) {
+    const result = stateLock.then(fn);
+    stateLock = result.catch(() => {}); // keep the chain going after an error
+    return result;
+}
+
+let timeoutId = null;
+
+function removeTab(tabId) {
+    // Suppress error if tab is already closed
+    chrome.tabs.remove(tabId).catch(() => {});
+}
+
+chrome.runtime.onMessage.addListener((request, sender) => {
+    // 1. Start command from the main page
+    if (request.action === "start_queue") {
+        withStateLock(() => updateState({
+            videoQueue: request.queue,
+            maxConcurrent: request.maxConcurrent || 0,
+            isExtracting: false,
+            activeDownloads: []
+        })).then(checkQueue);
     }
+
+    // 2. Stop command (Stop-Button)
+    if (request.action === "stop_queue") {
+        if (timeoutId) clearTimeout(timeoutId);
+        withStateLock(async () => {
+            const state = await getState();
+            if (state.currentTabId) removeTab(state.currentTabId);
+
+            await updateState({
+                videoQueue: [],
+                currentVideo: null,
+                currentTabId: null,
+                isExtracting: false,
+                activeDownloads: []
+            });
+        });
+    }
+
+    // 3. Receive result from background tab
+    if (request.action === "link_found" || request.action === "link_not_found") {
+        finishExtraction(sender.tab && sender.tab.id, request.url);
+    }
+});
+
+// Event-driven queue check: frees a slot whenever one of our downloads completes or fails
+chrome.downloads.onChanged.addListener((delta) => {
+    if (delta.state && (delta.state.current === "complete" || delta.state.current === "interrupted")) {
+        withStateLock(async () => {
+            const state = await getState();
+            if (!state.activeDownloads.includes(delta.id)) return false;
+            await updateState({ activeDownloads: state.activeDownloads.filter(id => id !== delta.id) });
+            return true;
+        }).then((wasOurs) => {
+            if (wasOurs) checkQueue();
+        });
+    }
+});
+
+function checkQueue() {
+    return withStateLock(async () => {
+        const state = await getState();
+
+        // If the queue is finished
+        if (state.videoQueue.length === 0 && !state.isExtracting) {
+            const tabs = await chrome.tabs.query({});
+            tabs.forEach(tab => {
+                if (tab.url && tab.url.includes("video.ethz.ch")) {
+                    chrome.tabs.sendMessage(tab.id, { action: "queue_finished" }).catch(() => {});
+                }
+            });
+            return;
+        }
+
+        if (state.isExtracting || state.videoQueue.length === 0) return;
+
+        // Count only our own downloads, not other downloads running in the browser
+        if (state.maxConcurrent && state.activeDownloads.length >= state.maxConcurrent) return;
+
+        await startExtraction(state);
+    });
+}
+
+// Must be called while holding the state lock
+async function startExtraction(state) {
+    const [nextVideo, ...queue] = state.videoQueue;
+
+    await updateState({
+        isExtracting: true,
+        videoQueue: queue,
+        currentVideo: nextVideo
+    });
+
+    const tabUrl = nextVideo.url + `#eth-res=${nextVideo.res}`;
+    const tab = await chrome.tabs.create({ url: tabUrl, active: false });
+    await updateState({ currentTabId: tab.id });
+
+    // Timeout safeguard
+    if (timeoutId) clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => {
+        finishExtraction(tab.id, null);
+    }, 15000);
+}
+
+// Starts the download (if a link was found), closes the background tab and continues the queue
+function finishExtraction(tabId, url) {
+    withStateLock(async () => {
+        const state = await getState();
+
+        // Ignore reports from tabs we're not waiting for (timed out, stopped, or opened by the user)
+        if (!state.isExtracting || tabId !== state.currentTabId) return;
+        if (timeoutId) clearTimeout(timeoutId);
+
+        const changes = { currentTabId: null, isExtracting: false };
+
+        if (url && state.currentVideo) {
+            try {
+                const downloadId = await chrome.downloads.download({
+                    url: url,
+                    filename: state.currentVideo.filename,
+                    saveAs: false
+                });
+                // Register the download right away so it counts towards the limit
+                changes.activeDownloads = [...state.activeDownloads, downloadId];
+            } catch (err) {
+                console.error("Download error:", err.message);
+            }
+        }
+
+        removeTab(tabId);
+        await updateState(changes);
+    }).then(checkQueue);
 }
