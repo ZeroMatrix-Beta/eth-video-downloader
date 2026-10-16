@@ -52,6 +52,12 @@ function extractDateInfo(timeElement) {
     };
 }
 
+// After the extension is reloaded or updated, scripts in tabs that were already open lose their
+// connection and chrome.runtime is gone, so sending a message throws instead of failing quietly.
+function extensionAlive() {
+    return typeof chrome !== 'undefined' && !!chrome.runtime && !!chrome.runtime.id;
+}
+
 const currentUrl = window.location.href;
 
 // =========================================================================
@@ -66,6 +72,11 @@ if (currentUrl.includes('/v/')) {
     let messageSent = false;
 
     const interval = setInterval(() => {
+        if (!extensionAlive()) {
+            clearInterval(interval);
+            return;
+        }
+
         if (!buttonClicked) {
             // Find both English "Download" and German "Herunterladen" buttons
             const downloadBtn = Array.from(document.querySelectorAll('button')).find(b => {
@@ -135,6 +146,18 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
     }
 
     function startProcess() {
+        if (!extensionAlive()) {
+            updateUIStatus("Reload the page", true);
+            return;
+        }
+
+        // An unfinished date (e.g. only the day typed) reads as "" and would silently mean "no limit"
+        const dateInputs = [document.getElementById('eth-von-input'), document.getElementById('eth-bis-input')];
+        if (dateInputs.some(input => input.validity.badInput)) {
+            updateUIStatus("Check dates", true);
+            return;
+        }
+
         updateUIStatus("Downloads running...", false);
 
         const maxInputVal = document.getElementById('eth-max-input').value;
@@ -330,6 +353,12 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         row3.style.display = "flex"; row3.style.justifyContent = "space-between"; row3.style.alignItems = "center";
         row3.innerHTML = `<b>To:</b> <input type="date" id="eth-bis-input" value="${dates.max}" style="font-size: 11px; padding: 3px; width: 115px; border: 1px solid #ccc; border-radius: 3px;">`;
 
+        // Mark manual edits so the periodic refresh never overwrites them
+        [row2, row3].forEach(row => {
+            const input = row.querySelector('input');
+            ['input', 'change'].forEach(ev => input.addEventListener(ev, () => { input.dataset.edited = "1"; }));
+        });
+
         const rowRes = document.createElement('div');
         rowRes.style.display = "flex"; rowRes.style.justifyContent = "space-between"; rowRes.style.alignItems = "center";
         rowRes.innerHTML = `<b>Quality:</b> 
@@ -434,20 +463,36 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         document.body.appendChild(hideShowBtn);
     }
 
+    // Keeps the From/To fields in sync with the videos on the page (they load late, and the
+    // page is a single-page app, so the panel survives switching to another course).
+    // A field the user is editing is left alone: an unfinished date input has value "",
+    // which would otherwise be reset to the first/last date in the middle of typing.
+    let lastPath = location.pathname;
+    function syncDateInputs() {
+        const vonInput = document.getElementById('eth-von-input');
+        const bisInput = document.getElementById('eth-bis-input');
+        if (!vonInput || !bisInput) return;
+
+        // New course: forget manual edits and take over its dates
+        if (location.pathname !== lastPath) {
+            lastPath = location.pathname;
+            delete vonInput.dataset.edited;
+            delete bisInput.dataset.edited;
+        }
+
+        const dates = getMinMaxDates();
+        [[vonInput, dates.min], [bisInput, dates.max]].forEach(([input, value]) => {
+            if (input.dataset.edited || document.activeElement === input) return;
+            if (input.value !== value) input.value = value;
+        });
+    }
+
     // Checks every 1.5s, so the panel survives the page re-rendering or loading content late
     setInterval(() => {
         if (!document.getElementById('eth-mini-panel')) {
             injectButton();
         } else {
-            // Fill in the date fields if the videos were only loaded after the panel was created
-            const vonInput = document.getElementById('eth-von-input');
-            const bisInput = document.getElementById('eth-bis-input');
-
-            if (vonInput && bisInput && (!vonInput.value || !bisInput.value)) {
-                const dates = getMinMaxDates();
-                if (!vonInput.value && dates.min) vonInput.value = dates.min;
-                if (!bisInput.value && dates.max) bisInput.value = dates.max;
-            }
+            syncDateInputs();
         }
     }, 1500);
 }

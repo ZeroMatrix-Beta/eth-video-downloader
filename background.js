@@ -147,6 +147,14 @@ function finishExtraction(tabId, url) {
             } catch (err) {
                 console.error("Download error:", err.message);
             }
+        } else if (state.currentVideo) {
+            // No link found (page too slow, tab not ready...): try once more instead of silently skipping the video
+            if (!state.currentVideo.retried) {
+                console.warn("No download link found, retrying once:", state.currentVideo.url);
+                changes.videoQueue = [{ ...state.currentVideo, retried: true }, ...state.videoQueue];
+            } else {
+                console.error("Giving up, no download link found:", state.currentVideo.url);
+            }
         }
 
         removeTab(tabId);
