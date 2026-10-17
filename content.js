@@ -430,11 +430,14 @@ else if (window === window.top) {
         const isWindows = /Windows/.test(navigator.userAgent);
         const isMac = /Mac OS X|Macintosh/.test(navigator.userAgent);
         const installer = isWindows ? "native-host\\install.ps1" : "native-host/install.sh";
-        rowConvert.querySelector('#eth-convert-help').title = (isWindows ? [
+        const installCommand = isWindows
+            ? `powershell -ExecutionPolicy Bypass -File "<extension folder>\\native-host\\install.ps1" -ExtensionId ${chrome.runtime.id}`
+            : `bash "<extension folder>/native-host/install.sh" ${chrome.runtime.id}`;
+        const helpText = (isWindows ? [
             "One-time setup (needs ffmpeg on PATH, e.g. winget install Gyan.FFmpeg):",
             "",
             "1. Run in PowerShell:",
-            `powershell -ExecutionPolicy Bypass -File "<extension folder>\\native-host\\install.ps1" -ExtensionId ${chrome.runtime.id}`,
+            installCommand,
             "",
             "   <extension folder> is the folder loaded in chrome://extensions,",
             "   e.g. C:\\Users\\<you>\\...\\ETH Video Downloader",
@@ -446,7 +449,7 @@ else if (window === window.top) {
             `One-time setup (needs ffmpeg and python3, e.g. ${isMac ? "brew install ffmpeg" : "sudo apt install ffmpeg python3"}):`,
             "",
             "1. Run in a terminal:",
-            `bash "<extension folder>/native-host/install.sh" ${chrome.runtime.id}`,
+            installCommand,
             "",
             "   <extension folder> is the folder loaded in chrome://extensions,",
             `   e.g. ${isMac ? "/Users/<you>" : "/home/<you>"}/.../ETH Video Downloader`,
@@ -455,6 +458,47 @@ else if (window === window.top) {
             "",
             "To remove it: same command with --uninstall instead of the ID"
         ]).join("\n");
+
+        // A popup of our own rather than a title tooltip: Chrome often doesn't show those, and their text
+        // can't be selected. Opens on hover (or click, which keeps it open) and stays while the mouse is on it.
+        const helpBtn = rowConvert.querySelector('#eth-convert-help');
+        const helpPopup = document.createElement('div');
+        helpPopup.style.cssText = `
+            display: none; position: absolute; right: 0; bottom: calc(100% + 6px); width: 330px;
+            background: #222; color: #eee; padding: 8px 10px; border-radius: 5px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3); font-size: 11px; line-height: 1.4;
+            white-space: pre-wrap; word-break: break-all; user-select: text; cursor: text; z-index: 1000001;
+        `;
+        const helpBody = document.createElement('div');
+        helpBody.textContent = helpText;
+        const copyBtn = document.createElement('button');
+        copyBtn.textContent = "Copy command";
+        copyBtn.style.cssText = "margin-top: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; border: none; border-radius: 3px; background: #0070bc; color: white;";
+        copyBtn.onclick = () => {
+            navigator.clipboard.writeText(installCommand).then(
+                () => { copyBtn.textContent = "Copied, replace <extension folder>"; },
+                () => { copyBtn.textContent = "Copy failed, select the text"; }
+            );
+        };
+        helpPopup.append(helpBody, copyBtn);
+        panel.appendChild(helpPopup);
+
+        let helpPinned = false;
+        let hideTimer = null;
+        const showHelp = () => { clearTimeout(hideTimer); helpPopup.style.display = 'block'; };
+        const hideHelpSoon = () => {
+            if (helpPinned) return;
+            clearTimeout(hideTimer);
+            hideTimer = setTimeout(() => { helpPopup.style.display = 'none'; }, 300);
+        };
+        helpBtn.addEventListener('mouseenter', showHelp);
+        helpBtn.addEventListener('mouseleave', hideHelpSoon);
+        helpPopup.addEventListener('mouseenter', showHelp);
+        helpPopup.addEventListener('mouseleave', hideHelpSoon);
+        helpBtn.addEventListener('click', () => {
+            helpPinned = !helpPinned;
+            helpPinned ? showHelp() : (helpPopup.style.display = 'none');
+        });
 
         // Only lets the option stay on if the native host and ffmpeg are actually there
         const convertBox = rowConvert.querySelector('#eth-convert-1fps');
