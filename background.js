@@ -14,6 +14,9 @@ function getState() {
         convertTo1fps: false,
         started: 0, // downloads started in this run
         failed: [], // { filename, reason } of videos skipped in this run
+        // id -> { filename, convert } for every download of ours that hasn't completed yet, including
+        // interrupted ones (which no longer hold a slot), so a resumed download keeps its name and conversion
+        ourDownloads: {},
         activeDownloads: [] // IDs of our downloads still running or still being converted
     });
 }
@@ -123,23 +126,58 @@ function releaseSlot(downloadId) {
     });
 }
 
-// Event-driven queue check: frees a slot whenever one of our downloads fails, or completes
-// (and, with the 1 FPS option, has been converted, so ffmpeg runs count towards "Max at once")
+// Names passed to downloads.download(), by URL: Chrome may ask for the name before the download's id
+// is known and saved. Never pruned, but it only lives as long as the service worker.
+const pendingNames = new Map(); // url -> filename
+
+// Chrome forgets the filename given to downloads.download() when an interrupted download is resumed
+// ("Fortsetzen") and falls back to the server's name, so hand it our name again whenever it asks.
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+    getState().then((state) => {
+        const tracked = state.ourDownloads[item.id];
+        const filename = tracked ? tracked.filename : pendingNames.get(item.url);
+        if (filename) suggest({ filename, conflictAction: "uniquify" });
+        else suggest();
+    });
+    return true; // suggest is called asynchronously
+});
+
+// Event-driven queue check: frees a slot whenever one of our downloads is interrupted, or completes
+// (and, with the 1 FPS option, has been converted, so ffmpeg runs count towards "Max at once").
+// An interrupted download stays tracked, so resuming it later still converts it.
 chrome.downloads.onChanged.addListener((delta) => {
-    if (delta.state && (delta.state.current === "complete" || delta.state.current === "interrupted")) {
-        withStateLock(async () => {
-            const state = await getState();
-            if (!state.activeDownloads.includes(delta.id)) return false;
-            return { convert: delta.state.current === "complete" && state.convertTo1fps };
-        }).then(async (ours) => {
-            if (!ours) return;
-            if (ours.convert) {
-                await convertDownload(delta.id).catch(err => console.error("Conversion error:", err.message));
-            }
-            await releaseSlot(delta.id);
-            checkQueue();
-        });
-    }
+    if (!delta.state) return;
+    const complete = delta.state.current === "complete";
+    if (!complete && delta.state.current !== "interrupted") return;
+
+    withStateLock(async () => {
+        const state = await getState();
+        const tracked = state.ourDownloads[delta.id];
+        const holdsSlot = state.activeDownloads.includes(delta.id);
+        if (!tracked && !holdsSlot) return null;
+
+        const convert = complete && !!tracked && tracked.convert;
+        const cancelled = delta.error && delta.error.current === "USER_CANCELED";
+        const changes = {};
+        if (complete || cancelled) {
+            const rest = { ...state.ourDownloads };
+            delete rest[delta.id];
+            changes.ourDownloads = rest;
+        }
+        // During a conversion the slot stays taken; it's released once ffmpeg is done
+        if (holdsSlot && !convert) {
+            changes.activeDownloads = state.activeDownloads.filter(id => id !== delta.id);
+        }
+        await updateState(changes);
+        return { convert, releaseAfter: holdsSlot && convert };
+    }).then(async (result) => {
+        if (!result) return;
+        if (result.convert) {
+            await convertDownload(delta.id).catch(err => console.error("Conversion error:", err.message));
+        }
+        if (result.releaseAfter) await releaseSlot(delta.id);
+        checkQueue();
+    });
 });
 
 function checkQueue() {
@@ -203,18 +241,21 @@ function finishExtraction(tabId, url, reason) {
         const changes = { currentTabId: null, isExtracting: false };
 
         if (url && state.currentVideo) {
+            const filename = state.currentVideo.filename;
+            pendingNames.set(url, filename);
             try {
                 const downloadId = await chrome.downloads.download({
                     url: url,
-                    filename: state.currentVideo.filename,
+                    filename: filename,
                     saveAs: false
                 });
                 // Register the download right away so it counts towards the limit
                 changes.activeDownloads = [...state.activeDownloads, downloadId];
+                changes.ourDownloads = { ...state.ourDownloads, [downloadId]: { filename, convert: state.convertTo1fps } };
                 changes.started = state.started + 1;
             } catch (err) {
                 console.error("Download error:", err.message);
-                changes.failed = [...state.failed, { filename: state.currentVideo.filename, reason: "download error" }];
+                changes.failed = [...state.failed, { filename, reason: "download error" }];
             }
         } else if (state.currentVideo) {
             // No link found (page too slow, tab not ready...): try once more instead of silently skipping the video
