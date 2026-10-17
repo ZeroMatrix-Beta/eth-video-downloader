@@ -18,7 +18,8 @@ function getState() {
         // id -> { filename, convert } for every download of ours that hasn't completed yet, including
         // interrupted ones (which no longer hold a slot), so a resumed download keeps its name and conversion
         ourDownloads: {},
-        activeDownloads: [] // IDs of our downloads still running or still being converted
+        conversionQueue: [], // IDs of completed downloads waiting for (or in) their 1 FPS conversion
+        activeDownloads: [] // IDs of our downloads still running
     });
 }
 
@@ -122,13 +123,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 });
 
-function releaseSlot(downloadId) {
-    return withStateLock(async () => {
-        const state = await getState();
-        await updateState({ activeDownloads: state.activeDownloads.filter(id => id !== downloadId) });
-    });
-}
-
 // Names passed to downloads.download(), by URL: Chrome may ask for the name before the download's id
 // is known and saved. Never pruned, but it only lives as long as the service worker.
 const pendingNames = new Map(); // url -> filename
@@ -145,8 +139,33 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     return true; // suggest is called asynchronously
 });
 
-// Event-driven queue check: frees a slot whenever one of our downloads is interrupted, or completes
-// (and, with the 1 FPS option, has been converted, so ffmpeg runs count towards "Max at once").
+// Conversions run one at a time: several ffmpeg processes decoding 1080p at once only fight over the CPU.
+// The queue lives in storage, so a conversion cut off by a service worker restart is simply redone.
+let conversionWorker = null;
+function runConversions() {
+    if (conversionWorker) return;
+    conversionWorker = (async () => {
+        for (;;) {
+            const { conversionQueue } = await getState();
+            if (conversionQueue.length === 0) return;
+            const downloadId = conversionQueue[0];
+            await convertDownload(downloadId).catch(err => console.error("Conversion error:", err.message));
+            await withStateLock(async () => {
+                const state = await getState();
+                await updateState({ conversionQueue: state.conversionQueue.filter(id => id !== downloadId) });
+            });
+        }
+    })().finally(async () => {
+        conversionWorker = null;
+        // Something may have been queued between the last check and now
+        const { conversionQueue } = await getState();
+        if (conversionQueue.length > 0) runConversions();
+    });
+}
+runConversions(); // resume after the service worker was restarted
+
+// Event-driven queue check: frees a slot whenever one of our downloads is interrupted or completes;
+// a completed one is handed to the conversion queue if the 1 FPS option was on.
 // An interrupted download stays tracked, so resuming it later still converts it.
 chrome.downloads.onChanged.addListener((delta) => {
     if (!delta.state) return;
@@ -157,9 +176,8 @@ chrome.downloads.onChanged.addListener((delta) => {
         const state = await getState();
         const tracked = state.ourDownloads[delta.id];
         const holdsSlot = state.activeDownloads.includes(delta.id);
-        if (!tracked && !holdsSlot) return null;
+        if (!tracked && !holdsSlot) return false;
 
-        const convert = complete && !!tracked && tracked.convert;
         const cancelled = delta.error && delta.error.current === "USER_CANCELED";
         const changes = {};
         if (complete || cancelled) {
@@ -167,18 +185,17 @@ chrome.downloads.onChanged.addListener((delta) => {
             delete rest[delta.id];
             changes.ourDownloads = rest;
         }
-        // During a conversion the slot stays taken; it's released once ffmpeg is done
-        if (holdsSlot && !convert) {
+        if (complete && tracked && tracked.convert) {
+            changes.conversionQueue = [...state.conversionQueue, delta.id];
+        }
+        if (holdsSlot) {
             changes.activeDownloads = state.activeDownloads.filter(id => id !== delta.id);
         }
         await updateState(changes);
-        return { convert, releaseAfter: holdsSlot && convert };
-    }).then(async (result) => {
-        if (!result) return;
-        if (result.convert) {
-            await convertDownload(delta.id).catch(err => console.error("Conversion error:", err.message));
-        }
-        if (result.releaseAfter) await releaseSlot(delta.id);
+        return true;
+    }).then((wasOurs) => {
+        if (!wasOurs) return;
+        runConversions();
         checkQueue();
     });
 });
