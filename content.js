@@ -137,11 +137,31 @@ if (isVideoPage) {
 else if (window === window.top) {
 
     chrome.runtime.onMessage.addListener((request) => {
+        if (request.action === "conversion_status") {
+            showConversionStatus(request);
+        }
         if (request.action === "queue_finished") {
             updateUIStatus("Finished!", true);
             showRunSummary(request.started || 0, request.failed || [], request.skipped || 0);
         }
     });
+
+    // Conversions run on after the downloads (and after a Chrome restart), so say what is converting
+    function showConversionStatus(status) {
+        const box = document.getElementById('eth-convert-progress');
+        if (!box) return;
+        if (!status || (!status.current && !status.waiting)) {
+            box.style.display = 'none';
+            return;
+        }
+        const text = box.querySelector('span');
+        text.textContent = status.current
+            ? `Converting to 1 FPS: ${status.current}` + (status.waiting ? ` (+${status.waiting} waiting)` : "")
+            : `${status.waiting} conversion${status.waiting === 1 ? "" : "s"} waiting`;
+        text.title = text.textContent;
+        box.querySelector('a').style.display = status.waiting ? 'inline' : 'none';
+        box.style.display = 'flex';
+    }
 
     // "Finished!" alone hides videos that were skipped, so list how many and why
     function showRunSummary(started, failed, skipped) {
@@ -676,6 +696,18 @@ else if (window === window.top) {
         runSummary.id = 'eth-run-summary';
         runSummary.style.cssText = "display: none; font-size: 10px; cursor: help;";
         contentContainer.appendChild(runSummary);
+
+        const convertProgress = document.createElement('div');
+        convertProgress.id = 'eth-convert-progress';
+        convertProgress.style.cssText = "display: none; justify-content: space-between; align-items: center; gap: 6px; font-size: 10px; color: #555;";
+        convertProgress.innerHTML = `<span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
+            <a href="#" title="Drops the waiting conversions; the one running now finishes" style="color: #d32f2f; flex-shrink: 0;">Cancel</a>`;
+        convertProgress.querySelector('a').addEventListener('click', (e) => {
+            e.preventDefault();
+            if (extensionAlive()) chrome.runtime.sendMessage({ action: "cancel_conversions" });
+        });
+        contentContainer.appendChild(convertProgress);
+        if (extensionAlive()) chrome.runtime.sendMessage({ action: "get_conversion_status" }, showConversionStatus);
         
         panel.appendChild(header);
         panel.appendChild(contentContainer);

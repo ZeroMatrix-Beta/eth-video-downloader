@@ -111,6 +111,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // answer asynchronously
     }
 
+    // Panel asks what is converting (on load), or cancels the waiting conversions
+    if (request.action === "get_conversion_status") {
+        sendConversionStatus().then(sendResponse);
+        return true;
+    }
+    if (request.action === "cancel_conversions") {
+        // The running one finishes, so no half-written file is left; its original is then deleted as usual
+        withStateLock(async () => {
+            const state = await getState();
+            const running = currentConversion ? state.conversionQueue.slice(0, 1) : [];
+            await updateState({ conversionQueue: running });
+        }).then(sendConversionStatus);
+    }
+
     // 1. Start command from the main page
     if (request.action === "start_queue") {
         (async () => {
@@ -176,22 +190,42 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
 });
 
 // Conversions run one at a time: several ffmpeg processes decoding 1080p at once only fight over the CPU.
-// The queue lives in storage, so a conversion cut off by a service worker restart is simply redone.
+// The queue lives in storage, so conversions left over when Chrome closed carry on at its next start
+// (which is why the panel shows them and offers to cancel them).
 let conversionWorker = null;
+let currentConversion = null; // file name being converted right now, for the panel
+const entryId = (e) => typeof e === "number" ? e : e.id; // entries queued by version 6.4 were bare IDs
+
+// Tells every open video.ethz.ch tab what's converting, so the panel can show it
+async function sendConversionStatus() {
+    const { conversionQueue } = await getState();
+    const status = {
+        action: "conversion_status",
+        current: currentConversion,
+        waiting: Math.max(0, conversionQueue.length - (currentConversion ? 1 : 0))
+    };
+    const tabs = await chrome.tabs.query({ url: "https://video.ethz.ch/*" });
+    tabs.forEach(tab => chrome.tabs.sendMessage(tab.id, status).catch(() => {}));
+    return status;
+}
+
 function runConversions() {
     if (conversionWorker) return;
     conversionWorker = (async () => {
         for (;;) {
             const { conversionQueue } = await getState();
             if (conversionQueue.length === 0) return;
-            // Entries queued by version 6.4 were bare download IDs
             const entry = typeof conversionQueue[0] === "number" ? { id: conversionQueue[0] } : conversionQueue[0];
+            const [item] = await chrome.downloads.search({ id: entry.id });
+            currentConversion = (entry.filename || (item && item.filename) || "a video").split(/[\\/]/).pop();
+            await sendConversionStatus();
             await convertDownload(entry.id, entry.filename).catch(err => console.error("Conversion error:", err.message));
+            currentConversion = null;
             await withStateLock(async () => {
                 const state = await getState();
-                const remaining = state.conversionQueue.filter(e => (typeof e === "number" ? e : e.id) !== entry.id);
-                await updateState({ conversionQueue: remaining });
+                await updateState({ conversionQueue: state.conversionQueue.filter(e => entryId(e) !== entry.id) });
             });
+            await sendConversionStatus();
         }
     })().finally(async () => {
         conversionWorker = null;
@@ -234,6 +268,7 @@ chrome.downloads.onChanged.addListener((delta) => {
     }).then((wasOurs) => {
         if (!wasOurs) return;
         runConversions();
+        sendConversionStatus();
         checkQueue();
     });
 });
