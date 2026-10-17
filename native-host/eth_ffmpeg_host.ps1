@@ -37,9 +37,10 @@ function Find-Ffmpeg {
     return $null
 }
 
-# Same settings as lec-extraction-prog (FfmpegToolkit.ProcessGeneralVideoAsync: speed 1, 1 FPS, mono,
-# and its configured FfmpegPreset "ultrafast"),
+# Same settings as lec-extraction-prog (FfmpegToolkit.ProcessGeneralVideoAsync: speed 1, 1 FPS, mono)
 # and the same "-speed-1-compressed" name, so that app uses the file as-is instead of recompressing it.
+# Preset "veryfast" rather than that app's "ultrafast": decoding the 1080p source dominates the time,
+# so it is barely slower, and the video stream comes out about 7x smaller.
 function Convert-Video($ffmpeg, $inputPath) {
     if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf) -or [IO.Path]::GetExtension($inputPath) -ne '.mp4') {
         return @{ ok = $false; error = "Not an existing .mp4 file: $inputPath" }
@@ -53,7 +54,7 @@ function Convert-Video($ffmpeg, $inputPath) {
 
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $ffmpeg
-    $psi.Arguments = "-hide_banner -loglevel error -nostdin -y -i `"$inputPath`" -vf `"fps=1`" -c:v libx264 -preset ultrafast -crf 28 -tune stillimage -g 120 -c:a aac -b:a 96k -ac 1 -af `"aformat=channel_layouts=mono`" -r 1 -f mp4 `"$partial`""
+    $psi.Arguments = "-hide_banner -loglevel error -nostdin -y -i `"$inputPath`" -vf `"fps=1`" -c:v libx264 -preset veryfast -crf 28 -tune stillimage -g 120 -c:a aac -b:a 96k -ac 1 -af `"aformat=channel_layouts=mono`" -r 1 -f mp4 `"$partial`""
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardError = $true

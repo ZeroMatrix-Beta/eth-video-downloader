@@ -32,9 +32,10 @@ def find_ffmpeg():
     return shutil.which("ffmpeg") or shutil.which("ffmpeg", path=os.pathsep.join(EXTRA_DIRS))
 
 
-# Same settings as lec-extraction-prog (FfmpegToolkit.ProcessGeneralVideoAsync: speed 1, 1 FPS, mono,
-# and its configured FfmpegPreset "ultrafast"), and the same "-speed-1-compressed" name, so that app
-# uses the file as-is instead of recompressing it.
+# Same settings as lec-extraction-prog (FfmpegToolkit.ProcessGeneralVideoAsync: speed 1, 1 FPS, mono)
+# and the same "-speed-1-compressed" name, so that app uses the file as-is instead of recompressing it.
+# Preset "veryfast" rather than that app's "ultrafast": decoding the 1080p source dominates the time,
+# so it is barely slower, and the video stream comes out about 7x smaller.
 def convert_video(ffmpeg, input_path):
     if not (isinstance(input_path, str) and os.path.isfile(input_path) and input_path.lower().endswith(".mp4")):
         return {"ok": False, "error": f"Not an existing .mp4 file: {input_path}"}
@@ -46,7 +47,7 @@ def convert_video(ffmpeg, input_path):
     args = [
         ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
         "-i", input_path,
-        "-vf", "fps=1", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-tune", "stillimage", "-g", "120",
+        "-vf", "fps=1", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-tune", "stillimage", "-g", "120",
         "-c:a", "aac", "-b:a", "96k", "-ac", "1", "-af", "aformat=channel_layouts=mono",
         "-r", "1", "-f", "mp4", partial,
     ]
