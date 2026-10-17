@@ -12,6 +12,7 @@ function getState() {
         maxConcurrent: 3, // 0 = no limit
         isExtracting: false,
         convertTo1fps: false,
+        stopped: false, // Stop was pressed: downloads still running must not report "Finished!"
         started: 0, // downloads started in this run
         failed: [], // { filename, reason } of videos skipped in this run
         // id -> { filename, convert } for every download of ours that hasn't completed yet, including
@@ -89,6 +90,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             videoQueue: request.queue,
             maxConcurrent: request.maxConcurrent || 0,
             convertTo1fps: !!request.convertTo1fps,
+            stopped: false,
             started: 0,
             failed: [],
             isExtracting: false,
@@ -108,6 +110,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 currentVideo: null,
                 currentTabId: null,
                 isExtracting: false,
+                stopped: true,
                 activeDownloads: []
             });
         });
@@ -186,6 +189,7 @@ function checkQueue() {
 
         // If the queue is finished
         if (state.videoQueue.length === 0 && !state.isExtracting) {
+            if (state.stopped) return;
             const tabs = await chrome.tabs.query({});
             tabs.forEach(tab => {
                 if (tab.url && tab.url.includes("video.ethz.ch")) {

@@ -159,7 +159,7 @@ else if (window === window.top) {
         summary.style.display = 'block';
     }
 
-    function updateUIStatus(text, enableStart = false) {
+    function updateUIStatus(text, enableStart = false, stopText = "Stop") {
         const btnStart = document.getElementById('eth-start-btn');
         if (btnStart) {
             btnStart.textContent = text;
@@ -169,6 +169,7 @@ else if (window === window.top) {
         const btnStop = document.getElementById('eth-stop-btn');
         if (btnStop) {
             btnStop.disabled = enableStart;
+            btnStop.textContent = stopText;
         }
     }
 
@@ -308,7 +309,7 @@ else if (window === window.top) {
 
     function stopProcess() {
         chrome.runtime.sendMessage({ action: "stop_queue" });
-        updateUIStatus("Stopped", true);
+        updateUIStatus("Start", true, "Stopped");
     }
 
     // Finds the oldest and newest video dates on the page (used to prefill the UI)
