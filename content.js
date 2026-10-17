@@ -426,8 +426,11 @@ else if (window === window.top) {
             </div>
             <span id="eth-convert-status" style="color: #d32f2f; font-size: 10px; display: none;"></span>`;
 
-        // The extension's real ID goes into the command; only the folder is a placeholder
-        rowConvert.querySelector('#eth-convert-help').title = [
+        // Steps for the viewer's system; the extension's real ID goes into the command, only the folder is a placeholder
+        const isWindows = /Windows/.test(navigator.userAgent);
+        const isMac = /Mac OS X|Macintosh/.test(navigator.userAgent);
+        const installer = isWindows ? "native-host\\install.ps1" : "native-host/install.sh";
+        rowConvert.querySelector('#eth-convert-help').title = (isWindows ? [
             "One-time setup (needs ffmpeg on PATH, e.g. winget install Gyan.FFmpeg):",
             "",
             "1. Run in PowerShell:",
@@ -439,7 +442,19 @@ else if (window === window.top) {
             "2. Restart Chrome completely (also from the system tray).",
             "",
             "To remove it: same command with -Uninstall instead of -ExtensionId ..."
-        ].join("\n");
+        ] : [
+            `One-time setup (needs ffmpeg and python3, e.g. ${isMac ? "brew install ffmpeg" : "sudo apt install ffmpeg python3"}):`,
+            "",
+            "1. Run in a terminal:",
+            `bash "<extension folder>/native-host/install.sh" ${chrome.runtime.id}`,
+            "",
+            "   <extension folder> is the folder loaded in chrome://extensions,",
+            `   e.g. ${isMac ? "/Users/<you>" : "/home/<you>"}/.../ETH Video Downloader`,
+            "",
+            `2. Quit the browser completely${isMac ? " (Cmd+Q)" : ""} and start it again.`,
+            "",
+            "To remove it: same command with --uninstall instead of the ID"
+        ]).join("\n");
 
         // Only lets the option stay on if the native host and ffmpeg are actually there
         const convertBox = rowConvert.querySelector('#eth-convert-1fps');
@@ -458,7 +473,7 @@ else if (window === window.top) {
                 convertBox.checked = false;
                 convertStatus.textContent = result && result.hostInstalled
                     ? "ffmpeg not found on PATH (restart Chrome after installing it)"
-                    : "Helper not installed: run native-host\\install.ps1";
+                    : `Helper not installed: run ${installer} (see ?)`;
                 convertStatus.style.display = 'block';
             });
         });

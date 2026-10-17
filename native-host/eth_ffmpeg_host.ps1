@@ -1,4 +1,5 @@
-# Native messaging host: reads one JSON message from Chrome, answers it, exits.
+# Native messaging host for Windows (eth_ffmpeg_host.py is the macOS/Linux twin; keep both in sync).
+# Reads one JSON message from Chrome, answers it, exits.
 # Protocol: 4-byte little-endian length + UTF-8 JSON, in both directions. Nothing else may reach stdout.
 $ErrorActionPreference = 'Stop'
 
