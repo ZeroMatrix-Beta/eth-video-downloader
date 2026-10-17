@@ -467,7 +467,8 @@ else if (window === window.top) {
             display: none; position: absolute; right: 0; bottom: calc(100% + 6px); width: 330px;
             background: #222; color: #eee; padding: 8px 10px; border-radius: 5px;
             box-shadow: 0 4px 10px rgba(0,0,0,0.3); font-size: 11px; line-height: 1.4;
-            white-space: pre-wrap; word-break: break-all; user-select: text; cursor: text; z-index: 1000001;
+            white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto;
+            user-select: text; cursor: text; z-index: 1000001;
         `;
         const helpBody = document.createElement('div');
         helpBody.textContent = helpText;
