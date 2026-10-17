@@ -32,6 +32,29 @@ def find_ffmpeg():
     return shutil.which("ffmpeg") or shutil.which("ffmpeg", path=os.pathsep.join(EXTRA_DIRS))
 
 
+# True if the video's first minute has a keyframe at least every second. Then decoding only keyframes
+# yields every frame the 1 FPS output needs, about twice as fast; with sparser keyframes it would freeze.
+def keyframe_every_second(ffmpeg, input_path):
+    ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe")
+    if not os.access(ffprobe, os.X_OK):
+        ffprobe = shutil.which("ffprobe") or shutil.which("ffprobe", path=os.pathsep.join(EXTRA_DIRS))
+    if not ffprobe:
+        return False
+    proc = subprocess.run(
+        [ffprobe, "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey",
+         "-show_entries", "frame=pts_time", "-read_intervals", "%+60", "-of", "csv=p=0", input_path],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if proc.returncode != 0:
+        return False
+    try:
+        times = sorted(float(t.strip(",")) for t in proc.stdout.decode().split() if t.strip(","))
+    except ValueError:
+        return False
+    if len(times) < 10:
+        return False
+    return all(b - a <= 1.05 for a, b in zip(times, times[1:]))
+
+
 # Same settings as lec-extraction-prog (FfmpegToolkit.ProcessGeneralVideoAsync: speed 1, 1 FPS, mono)
 # and the same "-speed-1-compressed" name, so that app uses the file as-is instead of recompressing it.
 # Preset "veryfast" rather than that app's "ultrafast": decoding the 1080p source dominates the time,
@@ -44,8 +67,9 @@ def convert_video(ffmpeg, input_path):
     # Written under a non-video name first, so a killed run never leaves a half file that looks finished
     partial = output + ".part"
 
+    skip = ["-skip_frame", "nokey"] if keyframe_every_second(ffmpeg, input_path) else []
     args = [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", *skip,
         "-i", input_path,
         "-vf", "fps=1", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-tune", "stillimage", "-g", "120",
         "-c:a", "aac", "-b:a", "96k", "-ac", "1", "-af", "aformat=channel_layouts=mono",

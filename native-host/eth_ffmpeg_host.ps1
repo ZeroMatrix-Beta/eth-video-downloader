@@ -37,6 +37,35 @@ function Find-Ffmpeg {
     return $null
 }
 
+# True if the video's first minute has a keyframe at least every second. Then decoding only keyframes
+# yields every frame the 1 FPS output needs, about twice as fast; with sparser keyframes it would freeze.
+function Test-KeyframeEverySecond($ffmpeg, $inputPath) {
+    $ffprobe = Join-Path ([IO.Path]::GetDirectoryName($ffmpeg)) 'ffprobe.exe'
+    if (-not (Test-Path -LiteralPath $ffprobe)) {
+        $cmd = Get-Command ffprobe -ErrorAction SilentlyContinue
+        if (-not $cmd) { return $false }
+        $ffprobe = $cmd.Source
+    }
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $ffprobe
+    $psi.Arguments = "-v error -select_streams v:0 -skip_frame nokey -show_entries frame=pts_time -read_intervals %+60 -of csv=p=0 `"$inputPath`""
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $proc = [Diagnostics.Process]::Start($psi)
+    $out = $proc.StandardOutput.ReadToEnd()
+    $proc.WaitForExit()
+    if ($proc.ExitCode -ne 0) { return $false }
+
+    $times = @($out -split '\s+' | ForEach-Object { $_.Trim(',') } | Where-Object { $_ } |
+        ForEach-Object { [double]::Parse($_, [Globalization.CultureInfo]::InvariantCulture) } | Sort-Object)
+    if ($times.Count -lt 10) { return $false }
+    for ($i = 1; $i -lt $times.Count; $i++) {
+        if ($times[$i] - $times[$i - 1] -gt 1.05) { return $false }
+    }
+    return $true
+}
+
 # Same settings as lec-extraction-prog (FfmpegToolkit.ProcessGeneralVideoAsync: speed 1, 1 FPS, mono)
 # and the same "-speed-1-compressed" name, so that app uses the file as-is instead of recompressing it.
 # Preset "veryfast" rather than that app's "ultrafast": decoding the 1080p source dominates the time,
@@ -52,9 +81,11 @@ function Convert-Video($ffmpeg, $inputPath) {
     # Written under a non-video name first, so a killed run never leaves a half file that looks finished
     $partial = "$output.part"
 
+    $skip = if (Test-KeyframeEverySecond $ffmpeg $inputPath) { '-skip_frame nokey ' } else { '' }
+
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $ffmpeg
-    $psi.Arguments = "-hide_banner -loglevel error -nostdin -y -i `"$inputPath`" -vf `"fps=1`" -c:v libx264 -preset veryfast -crf 28 -tune stillimage -g 120 -c:a aac -b:a 96k -ac 1 -af `"aformat=channel_layouts=mono`" -r 1 -f mp4 `"$partial`""
+    $psi.Arguments = "-hide_banner -loglevel error -nostdin -y $skip-i `"$inputPath`" -vf `"fps=1`" -c:v libx264 -preset veryfast -crf 28 -tune stillimage -g 120 -c:a aac -b:a 96k -ac 1 -af `"aformat=channel_layouts=mono`" -r 1 -f mp4 `"$partial`""
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardError = $true
