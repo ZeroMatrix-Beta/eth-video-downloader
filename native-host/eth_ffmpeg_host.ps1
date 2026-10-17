@@ -52,7 +52,7 @@ function Convert-Video($ffmpeg, $inputPath) {
 
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $ffmpeg
-    $psi.Arguments = "-hide_banner -loglevel error -nostdin -y -i `"$inputPath`" -vf `"fps=1`" -c:v libx264 -preset ultrafast-crf 28 -tune stillimage -g 120 -c:a aac -b:a 96k -ac 1 -af `"aformat=channel_layouts=mono`" -r 1 -f mp4 `"$partial`""
+    $psi.Arguments = "-hide_banner -loglevel error -nostdin -y -i `"$inputPath`" -vf `"fps=1`" -c:v libx264 -preset ultrafast -crf 28 -tune stillimage -g 120 -c:a aac -b:a 96k -ac 1 -af `"aformat=channel_layouts=mono`" -r 1 -f mp4 `"$partial`""
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardError = $true
