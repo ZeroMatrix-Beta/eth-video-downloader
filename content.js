@@ -200,6 +200,11 @@ else if (window === window.top) {
         const weekFormat = document.getElementById('eth-week-format').value;
         const appendTitle = document.getElementById('eth-append-title').checked;
         const convertTo1fps = document.getElementById('eth-convert-1fps').checked;
+        // Typed "prefix-" or "-suffix" would otherwise end up with a doubled hyphen
+        const cleanAffix = (id) => document.getElementById(id).value.trim()
+            .replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "_").replace(/^-+|-+$/g, "");
+        const filePrefix = cleanAffix('eth-file-prefix');
+        const fileSuffix = cleanAffix('eth-file-suffix');
 
         if (vonDate > bisDate && vonDate !== "0000-00-00" && bisDate !== "9999-99-99") {
             const temp = vonDate; vonDate = bisDate; bisDate = temp;
@@ -288,9 +293,11 @@ else if (window === window.top) {
                 filenameBase += `-${video.title}`;
             }
 
+            const fullName = [filePrefix, filenameBase, fileSuffix].filter(Boolean).join("-");
+
             currentQueue.push({
                 url: video.url,
-                filename: `${video.title}/${filenameBase}.mp4`,
+                filename: `${video.title}/${fullName}.mp4`,
                 res: selectedRes
             });
         });
@@ -403,16 +410,36 @@ else if (window === window.top) {
         const rowWeek = document.createElement('div');
         rowWeek.style.display = "flex"; rowWeek.style.justifyContent = "space-between"; rowWeek.style.alignItems = "center";
         rowWeek.innerHTML = `<b>Week format:</b> 
-            <select id="eth-week-format" style="font-size: 11px; padding: 3px; width: 123px; border: 1px solid #ccc; border-radius: 3px; cursor: pointer;">
+            <select id="eth-week-format" title="Semester week: week 1 is the first week with a recording, and weeks without any (e.g. the Easter break) are skipped." style="font-size: 11px; padding: 3px; width: 123px; border: 1px solid #ccc; border-radius: 3px; cursor: pointer;">
                 <option value="none">Don't include week</option>
-                <option value="calendar">Calendar Week</option>
-                <option value="semester">Start at Week 1</option>
+                <option value="calendar">Calendar week</option>
+                <option value="semester">Semester week</option>
             </select>`;
 
         const rowTitle = document.createElement('div');
         rowTitle.style.display = "flex"; rowTitle.style.justifyContent = "space-between"; rowTitle.style.alignItems = "center";
         rowTitle.innerHTML = `<label for="eth-append-title" style="cursor:pointer;"><b>Append course title:</b></label> 
             <input type="checkbox" id="eth-append-title" checked style="cursor: pointer; transform: scale(1.1);">`;
+
+        // Collapsed by default, so the panel stays short for the common case
+        const moreToggle = document.createElement('div');
+        moreToggle.textContent = "▸ More settings";
+        moreToggle.style.cssText = "cursor: pointer; color: #0070bc; font-weight: bold; user-select: none;";
+        const moreBox = document.createElement('div');
+        moreBox.style.cssText = "display: none; flex-direction: column; gap: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px; background: #fafafa;";
+        const affixInput = (id, placeholder) => `<input type="text" id="${id}" placeholder="${placeholder}" style="font-size: 11px; padding: 3px; width: 109px; border: 1px solid #ccc; border-radius: 3px;">`;
+        moreBox.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center;" title="Put in front of every file name, joined with a hyphen">
+                <b>File name prefix:</b> ${affixInput('eth-file-prefix', 'e.g. infsec')}
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;" title="Put at the end of every file name, joined with a hyphen">
+                <b>File name suffix:</b> ${affixInput('eth-file-suffix', 'e.g. lecture')}
+            </div>`;
+        moreToggle.onclick = () => {
+            const open = moreBox.style.display === 'none';
+            moreBox.style.display = open ? 'flex' : 'none';
+            moreToggle.textContent = (open ? "▾" : "▸") + " More settings";
+        };
 
         const rowConvert = document.createElement('div');
         rowConvert.style.display = "flex"; rowConvert.style.flexDirection = "column";
@@ -481,12 +508,18 @@ else if (window === window.top) {
                 () => { copyBtn.textContent = "Copy failed, select the text"; }
             );
         };
-        helpPopup.append(helpBody, copyBtn);
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = "×";
+        closeBtn.title = "Close";
+        closeBtn.style.cssText = "position: absolute; top: 2px; right: 4px; background: none; border: none; color: #aaa; font-size: 16px; line-height: 1; cursor: pointer; padding: 2px;";
+        helpBody.style.paddingRight = "14px";
+        helpPopup.append(closeBtn, helpBody, copyBtn);
         panel.appendChild(helpPopup);
 
         let helpPinned = false;
         let hideTimer = null;
         const showHelp = () => { clearTimeout(hideTimer); helpPopup.style.display = 'block'; };
+        const closeHelp = () => { clearTimeout(hideTimer); helpPinned = false; helpPopup.style.display = 'none'; };
         const hideHelpSoon = () => {
             if (helpPinned) return;
             clearTimeout(hideTimer);
@@ -497,8 +530,14 @@ else if (window === window.top) {
         helpPopup.addEventListener('mouseenter', showHelp);
         helpPopup.addEventListener('mouseleave', hideHelpSoon);
         helpBtn.addEventListener('click', () => {
-            helpPinned = !helpPinned;
-            helpPinned ? showHelp() : (helpPopup.style.display = 'none');
+            if (helpPinned) closeHelp();
+            else { helpPinned = true; showHelp(); }
+        });
+        closeBtn.addEventListener('click', closeHelp);
+        // A pinned popup also closes with Escape or a click anywhere outside it
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHelp(); });
+        document.addEventListener('click', (e) => {
+            if (helpPinned && !helpPopup.contains(e.target) && e.target !== helpBtn) closeHelp();
         });
 
         // Only lets the option stay on if the native host and ffmpeg are actually there
@@ -596,6 +635,8 @@ else if (window === window.top) {
         contentContainer.appendChild(rowWeek);
         contentContainer.appendChild(rowTitle);
         contentContainer.appendChild(rowConvert);
+        contentContainer.appendChild(moreToggle);
+        contentContainer.appendChild(moreBox);
         contentContainer.appendChild(btnContainer);
 
         const runSummary = document.createElement('div');
