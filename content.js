@@ -37,6 +37,8 @@ function extractDateInfo(timeElement) {
     
     const weekdayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
     const weekday = weekdayNames[d.getDay()];
+    // Lowercase like the English ones, which is also how lec-extraction-prog matches them
+    const weekdayNamesDe = ["sonntag", "montag", "dienstag", "mittwoch", "donnerstag", "freitag", "samstag"];
 
     const yyyyMmDd = `${year}-${month}-${day}`;
 
@@ -48,6 +50,7 @@ function extractDateInfo(timeElement) {
         day: day,
         year: year,
         weekday: weekday,
+        weekdayDe: weekdayNamesDe[d.getDay()],
         calWeek: getISOWeekInfo(d)
     };
 }
@@ -136,15 +139,16 @@ else if (window === window.top) {
     chrome.runtime.onMessage.addListener((request) => {
         if (request.action === "queue_finished") {
             updateUIStatus("Finished!", true);
-            showRunSummary(request.started || 0, request.failed || []);
+            showRunSummary(request.started || 0, request.failed || [], request.skipped || 0);
         }
     });
 
     // "Finished!" alone hides videos that were skipped, so list how many and why
-    function showRunSummary(started, failed) {
+    function showRunSummary(started, failed, skipped) {
         const summary = document.getElementById('eth-run-summary');
         if (!summary) return;
         let text = `${started} download${started === 1 ? "" : "s"} started`;
+        if (skipped > 0) text += `, ${skipped} skipped (already downloaded)`;
         summary.style.color = "#333";
         summary.title = "";
         if (failed.length > 0) {
@@ -205,6 +209,9 @@ else if (window === window.top) {
             .replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "_").replace(/^-+|-+$/g, "");
         const filePrefix = cleanAffix('eth-file-prefix');
         const fileSuffix = cleanAffix('eth-file-suffix');
+        const dateFormat = document.getElementById('eth-date-format').value;
+        const weekdayLang = document.getElementById('eth-weekday-lang').value;
+        const skipExisting = document.getElementById('eth-skip-existing').checked;
 
         if (vonDate > bisDate && vonDate !== "0000-00-00" && bisDate !== "9999-99-99") {
             const temp = vonDate; vonDate = bisDate; bisDate = temp;
@@ -282,8 +289,13 @@ else if (window === window.top) {
                 weekNum = getSemesterWeek(video.dateInfo.dateObj, lectureWeeks);
             }
 
-            // Basis-Format: MM-DD-YYYY-weekday
-            let filenameBase = `${video.dateInfo.month}-${video.dateInfo.day}-${video.dateInfo.year}-${video.dateInfo.weekday}`;
+            const { month, day, year } = video.dateInfo;
+            let filenameBase = dateFormat === "ymd" ? `${year}-${month}-${day}`
+                : dateFormat === "dmy" ? `${day}-${month}-${year}`
+                : `${month}-${day}-${year}`;
+            if (weekdayLang !== "none") {
+                filenameBase += "-" + (weekdayLang === "de" ? video.dateInfo.weekdayDe : video.dateInfo.weekday);
+            }
 
             if (weekFormat !== "none") {
                 filenameBase += `-week${weekNum}`;
@@ -307,7 +319,8 @@ else if (window === window.top) {
                 action: "start_queue", 
                 queue: currentQueue,
                 maxConcurrent: maxVideos,
-                convertTo1fps: convertTo1fps
+                convertTo1fps: convertTo1fps,
+                skipExisting: skipExisting
             });
         } else {
             updateUIStatus("No videos found", true);
@@ -434,6 +447,26 @@ else if (window === window.top) {
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center;" title="Put at the end of every file name, joined with a hyphen">
                 <b>File name suffix:</b> ${affixInput('eth-file-suffix', 'e.g. lecture')}
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;" title="YYYY-MM-DD sorts correctly in a file browser, also across years">
+                <b>Date format:</b>
+                <select id="eth-date-format" style="font-size: 11px; padding: 3px; width: 117px; border: 1px solid #ccc; border-radius: 3px; cursor: pointer;">
+                    <option value="mdy">MM-DD-YYYY</option>
+                    <option value="dmy">DD-MM-YYYY</option>
+                    <option value="ymd">YYYY-MM-DD</option>
+                </select>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <b>Weekday:</b>
+                <select id="eth-weekday-lang" style="font-size: 11px; padding: 3px; width: 117px; border: 1px solid #ccc; border-radius: 3px; cursor: pointer;">
+                    <option value="en">English (monday)</option>
+                    <option value="de">German (montag)</option>
+                    <option value="none">Leave out</option>
+                </select>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;" title="Skips a video if this Chrome already downloaded it to the same name and the file is still there, or converted it to 1 FPS. Settings that change the name (prefix, date format...) make it count as new.">
+                <label for="eth-skip-existing" style="cursor:pointer;"><b>Skip already downloaded:</b></label>
+                <input type="checkbox" id="eth-skip-existing" checked style="cursor: pointer; transform: scale(1.1);">
             </div>`;
         moreToggle.onclick = () => {
             const open = moreBox.style.display === 'none';
@@ -649,6 +682,39 @@ else if (window === window.top) {
         
         document.body.appendChild(panel);
         document.body.appendChild(hideShowBtn);
+        rememberSettings();
+    }
+
+    // Keeps the panel's settings between visits. From/To are left out: they come from each course page.
+    const REMEMBERED_SETTINGS = ['eth-max-input', 'eth-res-input', 'eth-week-format', 'eth-append-title',
+        'eth-convert-1fps', 'eth-file-prefix', 'eth-file-suffix', 'eth-date-format', 'eth-weekday-lang', 'eth-skip-existing'];
+    function rememberSettings() {
+        if (!extensionAlive() || !chrome.storage) return;
+        const read = (el) => el.type === 'checkbox' ? el.checked : el.value;
+        const save = () => {
+            if (!extensionAlive()) return;
+            const settings = {};
+            REMEMBERED_SETTINGS.forEach(id => { settings[id] = read(document.getElementById(id)); });
+            chrome.storage.local.set({ panelSettings: settings }).catch(() => {});
+        };
+        REMEMBERED_SETTINGS.forEach(id => {
+            const el = document.getElementById(id);
+            el.addEventListener('change', save);
+            el.addEventListener('input', save);
+        });
+
+        chrome.storage.local.get('panelSettings').then(({ panelSettings }) => {
+            if (!panelSettings) return;
+            REMEMBERED_SETTINGS.forEach(id => {
+                const el = document.getElementById(id);
+                if (!el || !(id in panelSettings)) return;
+                if (el.type === 'checkbox') el.checked = panelSettings[id];
+                else el.value = panelSettings[id];
+            });
+            // Re-run the helper check, in case it was uninstalled since
+            const convertBox = document.getElementById('eth-convert-1fps');
+            if (convertBox.checked) convertBox.dispatchEvent(new Event('change'));
+        }).catch(() => {});
     }
 
     // Keeps the From/To fields in sync with the videos on the page (they load late, and the

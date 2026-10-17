@@ -110,6 +110,7 @@ try {
 
     switch ($msg.action) {
         'ping'    { Write-Message @{ ok = $true; ffmpeg = [bool]$ffmpeg } }
+        'exists'  { Write-Message @{ ok = $true; exists = [bool]($msg.path -and (Test-Path -LiteralPath $msg.path -PathType Leaf)) } }
         'convert' {
             if (-not $ffmpeg) { Write-Message @{ ok = $false; error = 'ffmpeg not found on PATH' } }
             else { Write-Message (Convert-Video $ffmpeg $msg.path) }

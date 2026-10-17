@@ -98,6 +98,9 @@ def main():
         action = msg.get("action")
         if action == "ping":
             write_message({"ok": True, "ffmpeg": bool(ffmpeg)})
+        elif action == "exists":
+            path = msg.get("path")
+            write_message({"ok": True, "exists": isinstance(path, str) and os.path.isfile(path)})
         elif action == "convert":
             if not ffmpeg:
                 write_message({"ok": False, "error": "ffmpeg not found on PATH"})

@@ -15,10 +15,15 @@ function getState() {
         stopped: false, // Stop was pressed: downloads still running must not report "Finished!"
         started: 0, // downloads started in this run
         failed: [], // { filename, reason } of videos skipped in this run
+        skipped: 0, // videos left out of this run because they were already there
         // id -> { filename, convert } for every download of ours that hasn't completed yet, including
         // interrupted ones (which no longer hold a slot), so a resumed download keeps its name and conversion
         ourDownloads: {},
-        conversionQueue: [], // IDs of completed downloads waiting for (or in) their 1 FPS conversion
+        // { id, filename } of completed downloads waiting for (or in) their 1 FPS conversion
+        conversionQueue: [],
+        // relative filename -> absolute path of its -speed-1-compressed file, for "skip already downloaded"
+        // (the original is deleted after conversion, so the download history no longer knows it)
+        convertedFiles: {},
         activeDownloads: [] // IDs of our downloads still running
     });
 }
@@ -48,16 +53,37 @@ function askNativeHost(message) {
 }
 
 // Converts a finished download to 1 FPS and deletes the original only once the converted file exists
-async function convertDownload(downloadId) {
+async function convertDownload(downloadId, filename) {
     const [item] = await chrome.downloads.search({ id: downloadId });
     if (!item || !item.filename) return;
 
     const response = await askNativeHost({ action: "convert", path: item.filename });
     if (response.ok) {
         await chrome.downloads.removeFile(downloadId).catch(err => console.error("Could not delete original:", err.message));
+        if (filename) {
+            await withStateLock(async () => {
+                const state = await getState();
+                await updateState({ convertedFiles: { ...state.convertedFiles, [filename]: response.output } });
+            });
+        }
     } else {
         console.error("Conversion failed, keeping original:", item.filename, response.error);
     }
+}
+
+// True if this video (relative filename like "Course/name.mp4") was downloaded before and is still on
+// disk, either as the original or as its 1 FPS conversion
+async function alreadyDownloaded(filename, convertedFiles) {
+    const baseName = filename.split("/").pop();
+    // search() also re-checks whether each file still exists, which "exists: true" then filters on
+    const items = await chrome.downloads.search({ query: [baseName], state: "complete", exists: true });
+    if (items.some(item => item.filename.replace(/\\/g, "/").endsWith("/" + filename))) return true;
+
+    const convertedPath = convertedFiles[filename];
+    if (!convertedPath) return false;
+    const response = await askNativeHost({ action: "exists", path: convertedPath });
+    // Without the helper there is no way to look at the disk, so trust the record
+    return response.ok ? !!response.exists : true;
 }
 
 // Runs state read-modify-write sequences one after another, so overlapping events
@@ -87,16 +113,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     // 1. Start command from the main page
     if (request.action === "start_queue") {
-        withStateLock(() => updateState({
-            videoQueue: request.queue,
-            maxConcurrent: request.maxConcurrent || 0,
-            convertTo1fps: !!request.convertTo1fps,
-            stopped: false,
-            started: 0,
-            failed: [],
-            isExtracting: false,
-            activeDownloads: []
-        })).then(checkQueue);
+        (async () => {
+            let queue = request.queue;
+            if (request.skipExisting) {
+                const { convertedFiles } = await getState();
+                const keep = await Promise.all(queue.map(async (video) => !(await alreadyDownloaded(video.filename, convertedFiles))));
+                queue = queue.filter((video, i) => keep[i]);
+            }
+            await withStateLock(() => updateState({
+                videoQueue: queue,
+                maxConcurrent: request.maxConcurrent || 0,
+                convertTo1fps: !!request.convertTo1fps,
+                stopped: false,
+                started: 0,
+                failed: [],
+                skipped: request.queue.length - queue.length,
+                isExtracting: false,
+                activeDownloads: []
+            }));
+            checkQueue();
+        })();
     }
 
     // 2. Stop command (Stop-Button)
@@ -148,11 +184,13 @@ function runConversions() {
         for (;;) {
             const { conversionQueue } = await getState();
             if (conversionQueue.length === 0) return;
-            const downloadId = conversionQueue[0];
-            await convertDownload(downloadId).catch(err => console.error("Conversion error:", err.message));
+            // Entries queued by version 6.4 were bare download IDs
+            const entry = typeof conversionQueue[0] === "number" ? { id: conversionQueue[0] } : conversionQueue[0];
+            await convertDownload(entry.id, entry.filename).catch(err => console.error("Conversion error:", err.message));
             await withStateLock(async () => {
                 const state = await getState();
-                await updateState({ conversionQueue: state.conversionQueue.filter(id => id !== downloadId) });
+                const remaining = state.conversionQueue.filter(e => (typeof e === "number" ? e : e.id) !== entry.id);
+                await updateState({ conversionQueue: remaining });
             });
         }
     })().finally(async () => {
@@ -186,7 +224,7 @@ chrome.downloads.onChanged.addListener((delta) => {
             changes.ourDownloads = rest;
         }
         if (complete && tracked && tracked.convert) {
-            changes.conversionQueue = [...state.conversionQueue, delta.id];
+            changes.conversionQueue = [...state.conversionQueue, { id: delta.id, filename: tracked.filename }];
         }
         if (holdsSlot) {
             changes.activeDownloads = state.activeDownloads.filter(id => id !== delta.id);
@@ -213,7 +251,8 @@ function checkQueue() {
                     chrome.tabs.sendMessage(tab.id, {
                         action: "queue_finished",
                         started: state.started,
-                        failed: state.failed
+                        failed: state.failed,
+                        skipped: state.skipped
                     }).catch(() => {});
                 }
             });
