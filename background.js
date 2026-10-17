@@ -11,8 +11,46 @@ function getState() {
         currentTabId: null,
         maxConcurrent: 3, // 0 = no limit
         isExtracting: false,
-        activeDownloads: [] // IDs of downloads started by this extension that are still running
+        convertTo1fps: false,
+        activeDownloads: [] // IDs of our downloads still running or still being converted
     });
+}
+
+const NATIVE_HOST = "eth_video_downloader.ffmpeg";
+
+// One port per request; an open native port also keeps the service worker alive during a long conversion.
+function askNativeHost(message) {
+    return new Promise((resolve) => {
+        let port;
+        try {
+            port = chrome.runtime.connectNative(NATIVE_HOST);
+        } catch (err) {
+            resolve({ ok: false, error: err.message });
+            return;
+        }
+        port.onMessage.addListener((response) => {
+            resolve(response);
+            port.disconnect();
+        });
+        port.onDisconnect.addListener(() => {
+            const error = chrome.runtime.lastError ? chrome.runtime.lastError.message : "Native host disconnected";
+            resolve({ ok: false, error });
+        });
+        port.postMessage(message);
+    });
+}
+
+// Converts a finished download to 1 FPS and deletes the original only once the converted file exists
+async function convertDownload(downloadId) {
+    const [item] = await chrome.downloads.search({ id: downloadId });
+    if (!item || !item.filename) return;
+
+    const response = await askNativeHost({ action: "convert", path: item.filename });
+    if (response.ok) {
+        await chrome.downloads.removeFile(downloadId).catch(err => console.error("Could not delete original:", err.message));
+    } else {
+        console.error("Conversion failed, keeping original:", item.filename, response.error);
+    }
 }
 
 // Runs state read-modify-write sequences one after another, so overlapping events
@@ -31,12 +69,21 @@ function removeTab(tabId) {
     chrome.tabs.remove(tabId).catch(() => {});
 }
 
-chrome.runtime.onMessage.addListener((request, sender) => {
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    // 0. Panel asks whether the 1 FPS option can work
+    if (request.action === "check_ffmpeg") {
+        askNativeHost({ action: "ping" }).then((response) => {
+            sendResponse({ hostInstalled: !!response.ok, ffmpeg: !!(response.ok && response.ffmpeg) });
+        });
+        return true; // answer asynchronously
+    }
+
     // 1. Start command from the main page
     if (request.action === "start_queue") {
         withStateLock(() => updateState({
             videoQueue: request.queue,
             maxConcurrent: request.maxConcurrent || 0,
+            convertTo1fps: !!request.convertTo1fps,
             isExtracting: false,
             activeDownloads: []
         })).then(checkQueue);
@@ -65,16 +112,28 @@ chrome.runtime.onMessage.addListener((request, sender) => {
     }
 });
 
-// Event-driven queue check: frees a slot whenever one of our downloads completes or fails
+function releaseSlot(downloadId) {
+    return withStateLock(async () => {
+        const state = await getState();
+        await updateState({ activeDownloads: state.activeDownloads.filter(id => id !== downloadId) });
+    });
+}
+
+// Event-driven queue check: frees a slot whenever one of our downloads fails, or completes
+// (and, with the 1 FPS option, has been converted, so ffmpeg runs count towards "Max at once")
 chrome.downloads.onChanged.addListener((delta) => {
     if (delta.state && (delta.state.current === "complete" || delta.state.current === "interrupted")) {
         withStateLock(async () => {
             const state = await getState();
             if (!state.activeDownloads.includes(delta.id)) return false;
-            await updateState({ activeDownloads: state.activeDownloads.filter(id => id !== delta.id) });
-            return true;
-        }).then((wasOurs) => {
-            if (wasOurs) checkQueue();
+            return { convert: delta.state.current === "complete" && state.convertTo1fps };
+        }).then(async (ours) => {
+            if (!ours) return;
+            if (ours.convert) {
+                await convertDownload(delta.id).catch(err => console.error("Conversion error:", err.message));
+            }
+            await releaseSlot(delta.id);
+            checkQueue();
         });
     }
 });

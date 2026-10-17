@@ -169,6 +169,7 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         const selectedRes = document.getElementById('eth-res-input').value;
         const weekFormat = document.getElementById('eth-week-format').value;
         const appendTitle = document.getElementById('eth-append-title').checked;
+        const convertTo1fps = document.getElementById('eth-convert-1fps').checked;
 
         if (vonDate > bisDate && vonDate !== "0000-00-00" && bisDate !== "9999-99-99") {
             const temp = vonDate; vonDate = bisDate; bisDate = temp;
@@ -268,7 +269,8 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
             chrome.runtime.sendMessage({ 
                 action: "start_queue", 
                 queue: currentQueue,
-                maxConcurrent: maxVideos 
+                maxConcurrent: maxVideos,
+                convertTo1fps: convertTo1fps
             });
         } else {
             updateUIStatus("No videos found", true);
@@ -382,6 +384,37 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         rowTitle.innerHTML = `<label for="eth-append-title" style="cursor:pointer;"><b>Append course title:</b></label> 
             <input type="checkbox" id="eth-append-title" checked style="cursor: pointer; transform: scale(1.1);">`;
 
+        const rowConvert = document.createElement('div');
+        rowConvert.style.display = "flex"; rowConvert.style.flexDirection = "column";
+        rowConvert.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <label for="eth-convert-1fps" style="cursor:pointer;" title="After each download, ffmpeg re-encodes it to 1 FPS with mono AAC audio (-speed-1-compressed.mp4) and deletes the original. The original is kept if the conversion fails."><b>Convert to 1 FPS (ffmpeg):</b></label>
+                <input type="checkbox" id="eth-convert-1fps" style="cursor: pointer; transform: scale(1.1);">
+            </div>
+            <span id="eth-convert-status" style="color: #d32f2f; font-size: 10px; display: none;"></span>`;
+
+        // Only lets the option stay on if the native host and ffmpeg are actually there
+        const convertBox = rowConvert.querySelector('#eth-convert-1fps');
+        const convertStatus = rowConvert.querySelector('#eth-convert-status');
+        convertBox.addEventListener('change', () => {
+            convertStatus.style.display = 'none';
+            if (!convertBox.checked) return;
+            if (!extensionAlive()) {
+                convertBox.checked = false;
+                convertStatus.textContent = "Reload the page";
+                convertStatus.style.display = 'block';
+                return;
+            }
+            chrome.runtime.sendMessage({ action: "check_ffmpeg" }, (result) => {
+                if (result && result.ffmpeg) return;
+                convertBox.checked = false;
+                convertStatus.textContent = result && result.hostInstalled
+                    ? "ffmpeg not found on PATH (restart Chrome after installing it)"
+                    : "Helper not installed: run native-host\\install.ps1";
+                convertStatus.style.display = 'block';
+            });
+        });
+
         const btnContainer = document.createElement('div');
         btnContainer.style.display = "flex"; btnContainer.style.gap = "5px"; btnContainer.style.marginTop = "4px";
 
@@ -454,6 +487,7 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         contentContainer.appendChild(rowRes);
         contentContainer.appendChild(rowWeek);
         contentContainer.appendChild(rowTitle);
+        contentContainer.appendChild(rowConvert);
         contentContainer.appendChild(btnContainer);
         
         panel.appendChild(header);
