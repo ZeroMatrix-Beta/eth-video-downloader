@@ -12,6 +12,8 @@ function getState() {
         maxConcurrent: 3, // 0 = no limit
         isExtracting: false,
         convertTo1fps: false,
+        started: 0, // downloads started in this run
+        failed: [], // { filename, reason } of videos skipped in this run
         activeDownloads: [] // IDs of our downloads still running or still being converted
     });
 }
@@ -84,6 +86,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             videoQueue: request.queue,
             maxConcurrent: request.maxConcurrent || 0,
             convertTo1fps: !!request.convertTo1fps,
+            started: 0,
+            failed: [],
             isExtracting: false,
             activeDownloads: []
         })).then(checkQueue);
@@ -108,7 +112,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     // 3. Receive result from background tab
     if (request.action === "link_found" || request.action === "link_not_found") {
-        finishExtraction(sender.tab && sender.tab.id, request.url);
+        finishExtraction(sender.tab && sender.tab.id, request.url, request.reason);
     }
 });
 
@@ -147,7 +151,11 @@ function checkQueue() {
             const tabs = await chrome.tabs.query({});
             tabs.forEach(tab => {
                 if (tab.url && tab.url.includes("video.ethz.ch")) {
-                    chrome.tabs.sendMessage(tab.id, { action: "queue_finished" }).catch(() => {});
+                    chrome.tabs.sendMessage(tab.id, {
+                        action: "queue_finished",
+                        started: state.started,
+                        failed: state.failed
+                    }).catch(() => {});
                 }
             });
             return;
@@ -179,12 +187,12 @@ async function startExtraction(state) {
     // Timeout safeguard
     if (timeoutId) clearTimeout(timeoutId);
     timeoutId = setTimeout(() => {
-        finishExtraction(tab.id, null);
+        finishExtraction(tab.id, null, "timeout");
     }, 15000);
 }
 
 // Starts the download (if a link was found), closes the background tab and continues the queue
-function finishExtraction(tabId, url) {
+function finishExtraction(tabId, url, reason) {
     withStateLock(async () => {
         const state = await getState();
 
@@ -203,8 +211,10 @@ function finishExtraction(tabId, url) {
                 });
                 // Register the download right away so it counts towards the limit
                 changes.activeDownloads = [...state.activeDownloads, downloadId];
+                changes.started = state.started + 1;
             } catch (err) {
                 console.error("Download error:", err.message);
+                changes.failed = [...state.failed, { filename: state.currentVideo.filename, reason: "download error" }];
             }
         } else if (state.currentVideo) {
             // No link found (page too slow, tab not ready...): try once more instead of silently skipping the video
@@ -212,7 +222,8 @@ function finishExtraction(tabId, url) {
                 console.warn("No download link found, retrying once:", state.currentVideo.url);
                 changes.videoQueue = [{ ...state.currentVideo, retried: true }, ...state.videoQueue];
             } else {
-                console.error("Giving up, no download link found:", state.currentVideo.url);
+                console.error("Giving up, no download link found:", state.currentVideo.url, reason);
+                changes.failed = [...state.failed, { filename: state.currentVideo.filename, reason: reason || "timeout" }];
             }
         }
 

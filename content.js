@@ -58,12 +58,14 @@ function extensionAlive() {
     return typeof chrome !== 'undefined' && !!chrome.runtime && !!chrome.runtime.id;
 }
 
-const currentUrl = window.location.href;
+// Videos live under ".../v/<id>" inside a lecture page, or "/!v/<id>" on a directly opened series ("/!s/<id>")
+const VIDEO_LINK_SELECTOR = 'a[href*="/v/"], a[href*="/!v/"]';
+const isVideoPage = /\/!?v\//.test(window.location.pathname);
 
 // =========================================================================
 // ROLLE A: IM HINTERGRUND-TAB (Klickt den Button & sucht den Link)
 // =========================================================================
-if (currentUrl.includes('/v/')) {
+if (isVideoPage) {
     const hashParams = new URLSearchParams(window.location.hash.substring(1));
     const resolution = hashParams.get('eth-res') || '1920'; 
 
@@ -115,7 +117,12 @@ if (currentUrl.includes('/v/')) {
         if (Date.now() - startTime > 10000) {
             clearInterval(interval);
             if (!messageSent) {
-                chrome.runtime.sendMessage({ action: "link_not_found" });
+                // A password form instead of the player means this tab has no unlock for the video
+                let reason = "no links";
+                if (!buttonClicked) {
+                    reason = document.querySelector('input[type="password"]') ? "locked" : "no download button";
+                }
+                chrome.runtime.sendMessage({ action: "link_not_found", reason: reason });
             }
         }
     }, 300);
@@ -124,13 +131,33 @@ if (currentUrl.includes('/v/')) {
 // =========================================================================
 // ROLLE B: AUF DER HAUPTSEITE (Link-First Smart-Crawler & UI)
 // =========================================================================
-else if (window === window.top && !currentUrl.includes('/v/')) {
-    
+else if (window === window.top) {
+
     chrome.runtime.onMessage.addListener((request) => {
         if (request.action === "queue_finished") {
             updateUIStatus("Finished!", true);
+            showRunSummary(request.started || 0, request.failed || []);
         }
     });
+
+    // "Finished!" alone hides videos that were skipped, so list how many and why
+    function showRunSummary(started, failed) {
+        const summary = document.getElementById('eth-run-summary');
+        if (!summary) return;
+        let text = `${started} download${started === 1 ? "" : "s"} started`;
+        summary.style.color = "#333";
+        summary.title = "";
+        if (failed.length > 0) {
+            const reasons = {};
+            failed.forEach(f => { reasons[f.reason] = (reasons[f.reason] || 0) + 1; });
+            text += `, ${failed.length} failed (` + Object.entries(reasons).map(([r, n]) => `${n} ${r}`).join(", ") + ")";
+            if (reasons.locked) text += ". Locked: unlock a video of the series while signed in to ETH, then retry.";
+            summary.style.color = "#d32f2f";
+            summary.title = failed.map(f => `${f.reason}: ${f.filename}`).join("\n");
+        }
+        summary.textContent = text;
+        summary.style.display = 'block';
+    }
 
     function updateUIStatus(text, enableStart = false) {
         const btnStart = document.getElementById('eth-start-btn');
@@ -159,6 +186,8 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         }
 
         updateUIStatus("Downloads running...", false);
+        const oldSummary = document.getElementById('eth-run-summary');
+        if (oldSummary) oldSummary.style.display = 'none';
 
         const maxInputVal = document.getElementById('eth-max-input').value;
         // 0 = no limit (Infinity doesn't survive being sent as a message)
@@ -179,7 +208,7 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         let extractedVideos = [];
 
         // 1. Alle Videos sammeln
-        const videoLinks = document.querySelectorAll('a[href*="/v/"]');
+        const videoLinks = document.querySelectorAll(VIDEO_LINK_SELECTOR);
         videoLinks.forEach(linkEl => {
             if (seenUrls.has(linkEl.href)) return;
 
@@ -287,7 +316,7 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         let minDate = "9999-99-99";
         let maxDate = "0000-00-00";
 
-        const videoLinks = document.querySelectorAll('a[href*="/v/"]');
+        const videoLinks = document.querySelectorAll(VIDEO_LINK_SELECTOR);
         videoLinks.forEach(linkEl => {
             let container = linkEl.parentElement;
             let timeEl = null;
@@ -489,6 +518,11 @@ else if (window === window.top && !currentUrl.includes('/v/')) {
         contentContainer.appendChild(rowTitle);
         contentContainer.appendChild(rowConvert);
         contentContainer.appendChild(btnContainer);
+
+        const runSummary = document.createElement('div');
+        runSummary.id = 'eth-run-summary';
+        runSummary.style.cssText = "display: none; font-size: 10px; cursor: help;";
+        contentContainer.appendChild(runSummary);
         
         panel.appendChild(header);
         panel.appendChild(contentContainer);
