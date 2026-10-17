@@ -418,10 +418,28 @@ else if (window === window.top) {
         rowConvert.style.display = "flex"; rowConvert.style.flexDirection = "column";
         rowConvert.innerHTML = `
             <div style="display: flex; justify-content: space-between; align-items: center;">
-                <label for="eth-convert-1fps" style="cursor:pointer;" title="After each download, ffmpeg re-encodes it to 1 FPS with mono AAC audio (-speed-1-compressed.mp4) and deletes the original. The original is kept if the conversion fails."><b>Convert to 1 FPS (ffmpeg):</b></label>
+                <div>
+                    <label for="eth-convert-1fps" style="cursor:pointer;" title="After each download, ffmpeg re-encodes it to 1 FPS with mono AAC audio (-speed-1-compressed.mp4) and deletes the original. The original is kept if the conversion fails."><b>Convert to 1 FPS (ffmpeg):</b></label>
+                    <span id="eth-convert-help" style="cursor: help; display: inline-block; width: 13px; height: 13px; line-height: 13px; margin-left: 3px; border-radius: 50%; background: #888; color: white; font-size: 9px; font-weight: bold; text-align: center;">?</span>
+                </div>
                 <input type="checkbox" id="eth-convert-1fps" style="cursor: pointer; transform: scale(1.1);">
             </div>
             <span id="eth-convert-status" style="color: #d32f2f; font-size: 10px; display: none;"></span>`;
+
+        // The extension's real ID goes into the command; only the folder is a placeholder
+        rowConvert.querySelector('#eth-convert-help').title = [
+            "One-time setup (needs ffmpeg on PATH, e.g. winget install Gyan.FFmpeg):",
+            "",
+            "1. Run in PowerShell:",
+            `powershell -ExecutionPolicy Bypass -File "<extension folder>\\native-host\\install.ps1" -ExtensionId ${chrome.runtime.id}`,
+            "",
+            "   <extension folder> is the folder loaded in chrome://extensions,",
+            "   e.g. C:\\Users\\<you>\\...\\ETH Video Downloader",
+            "",
+            "2. Restart Chrome completely (also from the system tray).",
+            "",
+            "To remove it: same command with -Uninstall instead of -ExtensionId ..."
+        ].join("\n");
 
         // Only lets the option stay on if the native host and ffmpeg are actually there
         const convertBox = rowConvert.querySelector('#eth-convert-1fps');
